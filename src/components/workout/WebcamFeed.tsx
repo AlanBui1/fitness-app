@@ -46,6 +46,7 @@ const WebcamFeed = ({
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const [streamReady, setStreamReady] = useState(false);
 
   const initializeWebcam = async () => {
     setIsLoading(true);
@@ -74,6 +75,7 @@ const WebcamFeed = ({
         });
 
         setIsLoading(false);
+        setStreamReady(true);
         onStreamReady(stream);
       }
     } catch (err) {
@@ -145,7 +147,7 @@ const WebcamFeed = ({
       />
 
       {/* Pose Detection Overlay */}
-      {!isLoading && !error && videoRef.current && (
+      {!isLoading && !error && streamReady && videoRef.current && (
         <PoseDetection videoElement={videoRef.current} />
       )}
 

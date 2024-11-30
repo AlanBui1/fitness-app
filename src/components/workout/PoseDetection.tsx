@@ -1,6 +1,8 @@
-import { useEffect, useRef } from "react";
-import * as tf from "@tensorflow/tfjs";
+import { useEffect, useRef, useState } from "react";
+import * as tf from "@tensorflow/tfjs-core";
+import "@tensorflow/tfjs-backend-webgl";
 import * as poseDetection from "@tensorflow-models/pose-detection";
+import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface PoseDetectionProps {
@@ -13,101 +15,206 @@ const PoseDetection = ({
   className = "",
 }: PoseDetectionProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const detectorRef = useRef<poseDetection.PoseDetector | null>(null);
+  const [isModelLoading, setIsModelLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [debugInfo, setDebugInfo] = useState({
+    fps: 0,
+    canvasSize: "",
+    landmarks: 0,
+  });
 
   useEffect(() => {
-    const initializeDetector = async () => {
-      await tf.ready();
-      const model = poseDetection.SupportedModels.MoveNet;
-      const detector = await poseDetection.createDetector(model, {
-        modelType: "lightning",
-      });
-      detectorRef.current = detector;
-    };
+    if (!videoElement || !canvasRef.current) {
+      console.log("Missing video or canvas element");
+      return;
+    }
 
-    initializeDetector();
+    let detector: poseDetection.PoseDetector | null = null;
+    let frameId: number | null = null;
+    let isActive = true;
+    let frameCount = 0;
+    let lastTime = performance.now();
 
-    return () => {
-      if (detectorRef.current) {
-        detectorRef.current = null;
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!videoElement || !canvasRef.current || !detectorRef.current) return;
-
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    let animationFrame: number;
-
-    const detectPose = async () => {
-      if (!videoElement || !detectorRef.current || !ctx) return;
-
+    const setupTF = async () => {
       try {
-        const poses = await detectorRef.current.estimatePoses(videoElement);
+        console.log("Starting TensorFlow initialization...");
 
-        // Clear canvas
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        // Initialize TensorFlow.js with WebGL backend
+        await tf.setBackend("webgl");
+        await tf.ready();
+        console.log("TensorFlow.js initialized with backend:", tf.getBackend());
 
-        // Draw skeleton
-        poses.forEach((pose) => {
-          drawSkeleton(ctx, pose.keypoints);
-        });
-      } catch (error) {
-        console.error("Error detecting pose:", error);
+        // Create detector with specific configuration
+        console.log("Creating pose detector...");
+        detector = await poseDetection.createDetector(
+          poseDetection.SupportedModels.MoveNet,
+          {
+            modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+            enableSmoothing: true,
+            minPoseScore: 0.2,
+          },
+        );
+        console.log("Pose detector created successfully");
+
+        setIsModelLoading(false);
+
+        // Start detection loop
+        const detectFrame = async () => {
+          if (!isActive || !detector || !videoElement || !canvasRef.current) {
+            console.log("Detection loop stopped:", {
+              isActive,
+              hasDetector: !!detector,
+              hasVideo: !!videoElement,
+              hasCanvas: !!canvasRef.current,
+            });
+            return;
+          }
+
+          try {
+            // Check if video is ready
+            if (videoElement.readyState < 2) {
+              frameId = requestAnimationFrame(detectFrame);
+              return;
+            }
+
+            const poses = await detector.estimatePoses(videoElement, {
+              flipHorizontal: true,
+              maxPoses: 1,
+            });
+
+            const canvas = canvasRef.current;
+            const ctx = canvas.getContext("2d");
+            if (!ctx) return;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw poses
+            poses.forEach((pose) => {
+              if (pose.keypoints) {
+                console.log(
+                  "Drawing pose with keypoints:",
+                  pose.keypoints.length,
+                );
+                drawPose(ctx, pose.keypoints);
+              }
+            });
+
+            // Update FPS counter
+            frameCount++;
+            const now = performance.now();
+            if (now - lastTime >= 1000) {
+              setDebugInfo((prev) => ({
+                ...prev,
+                fps: Math.round((frameCount * 1000) / (now - lastTime)),
+                landmarks: poses[0]?.keypoints?.length || 0,
+              }));
+              frameCount = 0;
+              lastTime = now;
+            }
+          } catch (err) {
+            console.error("Detection error:", err);
+          }
+
+          frameId = requestAnimationFrame(detectFrame);
+        };
+
+        console.log("Starting detection loop");
+        detectFrame();
+      } catch (err) {
+        console.error("Setup error:", err);
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Failed to initialize pose detection",
+        );
+        setIsModelLoading(false);
       }
-
-      animationFrame = requestAnimationFrame(detectPose);
     };
 
-    // Start detection loop
-    detectPose();
+    setupTF();
 
     return () => {
-      cancelAnimationFrame(animationFrame);
+      console.log("Cleaning up pose detection");
+      isActive = false;
+      if (frameId) cancelAnimationFrame(frameId);
+      if (detector) detector.dispose();
     };
   }, [videoElement]);
 
-  // Update canvas size when video dimensions change
+  // Update canvas size
   useEffect(() => {
     if (!videoElement || !canvasRef.current) return;
 
     const updateCanvasSize = () => {
-      if (!videoElement || !canvasRef.current) return;
-      canvasRef.current.width = videoElement.videoWidth;
-      canvasRef.current.height = videoElement.videoHeight;
+      const canvas = canvasRef.current;
+      if (!canvas || !videoElement) return;
+
+      canvas.width = videoElement.videoWidth || videoElement.clientWidth;
+      canvas.height = videoElement.videoHeight || videoElement.clientHeight;
+      console.log("Canvas size updated:", canvas.width, "x", canvas.height);
+
+      setDebugInfo((prev) => ({
+        ...prev,
+        canvasSize: `${canvas.width}x${canvas.height}`,
+      }));
     };
 
+    const resizeObserver = new ResizeObserver(updateCanvasSize);
+    resizeObserver.observe(videoElement);
     videoElement.addEventListener("loadedmetadata", updateCanvasSize);
-    updateCanvasSize();
 
     return () => {
+      resizeObserver.disconnect();
       videoElement.removeEventListener("loadedmetadata", updateCanvasSize);
     };
   }, [videoElement]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      className={cn("absolute inset-0 z-10 pointer-events-none", className)}
-    />
+    <div className="relative w-full h-full">
+      <canvas
+        ref={canvasRef}
+        className={cn("absolute inset-0 z-10 pointer-events-none", className)}
+        style={{ transform: "scaleX(-1)" }}
+      />
+      <div className="absolute top-2 left-2 z-20 bg-black/50 text-white p-2 rounded text-sm font-mono">
+        {isModelLoading ? (
+          <div className="flex items-center gap-2">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            Loading model...
+          </div>
+        ) : error ? (
+          <div className="text-red-400">Error: {error}</div>
+        ) : (
+          <>
+            <div>FPS: {debugInfo.fps}</div>
+            <div>Canvas: {debugInfo.canvasSize}</div>
+            <div>Landmarks: {debugInfo.landmarks}</div>
+          </>
+        )}
+      </div>
+    </div>
   );
 };
 
-// Helper function to draw skeleton
-const drawSkeleton = (
+const drawPose = (
   ctx: CanvasRenderingContext2D,
   keypoints: poseDetection.Keypoint[],
 ) => {
-  // Define connections between keypoints
+  // Draw points
+  keypoints.forEach((keypoint) => {
+    if (keypoint.score && keypoint.score > 0.3) {
+      ctx.beginPath();
+      ctx.arc(keypoint.x, keypoint.y, 6, 0, 2 * Math.PI);
+      ctx.fillStyle = "#00ff00";
+      ctx.fill();
+      ctx.strokeStyle = "#000000";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+  });
+
+  // Draw connections
   const connections = [
-    ["nose", "left_eye"],
-    ["nose", "right_eye"],
-    ["left_eye", "left_ear"],
-    ["right_eye", "right_ear"],
     ["left_shoulder", "right_shoulder"],
     ["left_shoulder", "left_elbow"],
     ["right_shoulder", "right_elbow"],
@@ -122,17 +229,6 @@ const drawSkeleton = (
     ["right_knee", "right_ankle"],
   ];
 
-  // Draw points
-  keypoints.forEach((keypoint) => {
-    if (keypoint.score && keypoint.score > 0.3) {
-      ctx.beginPath();
-      ctx.arc(keypoint.x, keypoint.y, 4, 0, 2 * Math.PI);
-      ctx.fillStyle = "#00ff00";
-      ctx.fill();
-    }
-  });
-
-  // Draw lines
   connections.forEach(([start, end]) => {
     const startPoint = keypoints.find((kp) => kp.name === start);
     const endPoint = keypoints.find((kp) => kp.name === end);
@@ -143,6 +239,15 @@ const drawSkeleton = (
       startPoint.score > 0.3 &&
       endPoint.score > 0.3
     ) {
+      // Draw glow effect
+      ctx.beginPath();
+      ctx.moveTo(startPoint.x, startPoint.y);
+      ctx.lineTo(endPoint.x, endPoint.y);
+      ctx.strokeStyle = "rgba(0, 255, 0, 0.3)";
+      ctx.lineWidth = 8;
+      ctx.stroke();
+
+      // Draw main line
       ctx.beginPath();
       ctx.moveTo(startPoint.x, startPoint.y);
       ctx.lineTo(endPoint.x, endPoint.y);

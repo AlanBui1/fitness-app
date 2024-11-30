@@ -1,24 +1,22 @@
-import { useState, useRef, useMemo, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
+import YouTube from "react-youtube";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
-import { RotateCcw, RefreshCw, Loader2 } from "lucide-react";
 import InstructorVideo from "./InstructorVideo";
 import WebcamFeed from "./WebcamFeed";
 import AlignmentGrid from "./AlignmentGrid";
 import VideoControls from "./VideoControls";
 import LayoutToggle from "./LayoutToggle";
 import GridToggle from "./GridToggle";
+import YouTubeInput from "./YouTubeInput";
 
 interface VideoContainerProps {
   className?: string;
   isCameraEnabled?: boolean;
-  videoUrl?: string;
 }
 
 const VideoContainer = ({
   className = "",
   isCameraEnabled = false,
-  videoUrl,
 }: VideoContainerProps) => {
   const [layout, setLayout] = useState<"split" | "mini">("split");
   const [showGrid, setShowGrid] = useState(false);
@@ -29,137 +27,92 @@ const VideoContainer = ({
   const [webcamError, setWebcamError] = useState<Error | null>(null);
   const [isEnded, setIsEnded] = useState(false);
   const [isVideoLoading, setIsVideoLoading] = useState(true);
-  const [isWebcamLoading, setIsWebcamLoading] = useState(true);
+  const [youtubeVideoId, setYoutubeVideoId] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const youtubePlayerRef = useRef<any>(null);
+  const intervalRef = useRef<number>();
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Memoize WebcamFeed components separately for split and mini views
-  const splitWebcamFeed = useMemo(
-    () => (
-      <WebcamFeed
-        isEnabled={isCameraEnabled && layout === "split"}
-        className="w-full h-full"
-        onError={setWebcamError}
-        onStreamReady={() => setIsWebcamLoading(false)}
-      />
-    ),
-    [isCameraEnabled, layout],
-  );
-
-  const miniWebcamFeed = useMemo(
-    () => (
-      <WebcamFeed
-        isEnabled={isCameraEnabled && layout === "mini"}
-        className="w-full h-full"
-        onError={setWebcamError}
-        onStreamReady={() => setIsWebcamLoading(false)}
-      />
-    ),
-    [isCameraEnabled, layout],
-  );
-
-  const handlePlayPause = useCallback(() => {
-    if (videoRef.current && !videoError && !isVideoLoading) {
+  const handlePlayPause = () => {
+    if (youtubeVideoId && youtubePlayerRef.current) {
       if (isPlaying) {
-        videoRef.current.pause();
+        youtubePlayerRef.current.pauseVideo();
       } else {
-        if (isEnded) {
-          handleReset();
-        }
-        videoRef.current.play().catch((error) => {
-          setVideoError(new Error("Failed to play video: " + error.message));
-          setIsPlaying(false);
-        });
+        youtubePlayerRef.current.playVideo();
       }
       setIsPlaying(!isPlaying);
     }
-  }, [isPlaying, videoError, isVideoLoading, isEnded]);
+  };
 
-  const handleReset = useCallback(() => {
-    if (videoRef.current && !videoError) {
-      videoRef.current.currentTime = 0;
+  const handleReset = () => {
+    if (youtubeVideoId && youtubePlayerRef.current) {
+      youtubePlayerRef.current.seekTo(0);
+      youtubePlayerRef.current.pauseVideo();
       setCurrentTime(0);
-      videoRef.current.pause();
       setIsPlaying(false);
       setIsEnded(false);
     }
-  }, [videoError]);
+  };
 
-  const handleSeek = useCallback(
-    (value: number[]) => {
-      if (videoRef.current && !videoError) {
-        const newTime = value[0];
-        videoRef.current.currentTime = newTime;
-        setCurrentTime(newTime);
-        if (newTime < duration) {
-          setIsEnded(false);
-        }
+  const handleSeek = (value: number[]) => {
+    if (youtubeVideoId && youtubePlayerRef.current) {
+      const newTime = value[0];
+      youtubePlayerRef.current.seekTo(newTime);
+      setCurrentTime(newTime);
+      if (newTime < duration) {
+        setIsEnded(false);
       }
-    },
-    [videoError, duration],
-  );
-
-  const handleSeekRelative = useCallback(
-    (seconds: number) => {
-      if (videoRef.current && !videoError) {
-        const newTime = Math.max(0, Math.min(duration, currentTime + seconds));
-        handleSeek([newTime]);
-      }
-    },
-    [videoError, duration, currentTime, handleSeek],
-  );
-
-  const handleTimeUpdate = useCallback((time: number) => {
-    setCurrentTime(time);
-  }, []);
-
-  const handleDurationChange = useCallback((newDuration: number) => {
-    setDuration(newDuration);
-  }, []);
-
-  const handleVideoError = useCallback((error: Error) => {
-    setVideoError(error);
-    setIsPlaying(false);
-    setIsEnded(false);
-    setIsVideoLoading(false);
-  }, []);
-
-  const handleVideoEnded = useCallback(() => {
-    setIsPlaying(false);
-    setIsEnded(true);
-  }, []);
-
-  const handleRetryVideo = useCallback(() => {
-    setVideoError(null);
-    setIsVideoLoading(true);
-    if (videoRef.current) {
-      videoRef.current.load();
     }
-  }, []);
+  };
 
-  const handleVideoLoaded = useCallback(() => {
+  const handleYouTubeReady = (event: any) => {
+    youtubePlayerRef.current = event.target;
+    setDuration(event.target.getDuration());
     setIsVideoLoading(false);
-  }, []);
+  };
 
-  // Fullscreen handling
-  const toggleFullscreen = useCallback(async () => {
-    if (!containerRef.current) return;
+  const handleYouTubeStateChange = (event: any) => {
+    switch (event.data) {
+      case 0: // ended
+        setIsPlaying(false);
+        setIsEnded(true);
+        break;
+      case 1: // playing
+        setIsPlaying(true);
+        break;
+      case 2: // paused
+        setIsPlaying(false);
+        break;
+      default:
+        break;
+    }
+  };
 
+  const handleYouTubeError = (error: any) => {
+    console.error("YouTube player error:", error);
+    setVideoError(new Error("Failed to load YouTube video"));
+    setIsVideoLoading(false);
+  };
+
+  const handleYouTubePlaybackTime = () => {
+    if (youtubePlayerRef.current) {
+      setCurrentTime(youtubePlayerRef.current.getCurrentTime());
+    }
+  };
+
+  const toggleFullscreen = async () => {
     try {
       if (!document.fullscreenElement) {
-        await containerRef.current.requestFullscreen();
-        setIsFullscreen(true);
+        await containerRef.current?.requestFullscreen();
       } else {
         await document.exitFullscreen();
-        setIsFullscreen(false);
       }
     } catch (error) {
       console.error("Error toggling fullscreen:", error);
     }
-  }, []);
+  };
 
-  // Handle fullscreen change events
+  // Handle fullscreen changes
   useEffect(() => {
     const handleFullscreenChange = () => {
       setIsFullscreen(!!document.fullscreenElement);
@@ -171,64 +124,17 @@ const VideoContainer = ({
     };
   }, []);
 
-  // Keyboard controls
+  // Start time update interval when playing
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Only handle keyboard events if the container is focused
-      if (!containerRef.current?.contains(document.activeElement)) return;
-
-      switch (e.code) {
-        case "Space":
-          e.preventDefault();
-          handlePlayPause();
-          break;
-        case "ArrowLeft":
-          e.preventDefault();
-          handleSeekRelative(-5); // Seek 5 seconds backward
-          break;
-        case "ArrowRight":
-          e.preventDefault();
-          handleSeekRelative(5); // Seek 5 seconds forward
-          break;
-        case "Home":
-          e.preventDefault();
-          handleSeek([0]); // Seek to start
-          break;
-        case "End":
-          e.preventDefault();
-          handleSeek([duration]); // Seek to end
-          break;
-        case "KeyR":
-          e.preventDefault();
-          handleReset(); // Reset video
-          break;
-        case "KeyG":
-          e.preventDefault();
-          setShowGrid(!showGrid); // Toggle grid
-          break;
-        case "KeyL":
-          e.preventDefault();
-          setLayout(layout === "split" ? "mini" : "split"); // Toggle layout
-          break;
-        case "KeyF":
-          e.preventDefault();
-          toggleFullscreen(); // Toggle fullscreen
-          break;
+    if (isPlaying) {
+      intervalRef.current = window.setInterval(handleYouTubePlaybackTime, 1000);
+    }
+    return () => {
+      if (intervalRef.current) {
+        window.clearInterval(intervalRef.current);
       }
     };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [
-    handlePlayPause,
-    handleSeekRelative,
-    handleSeek,
-    handleReset,
-    duration,
-    showGrid,
-    layout,
-    toggleFullscreen,
-  ]);
+  }, [isPlaying]);
 
   return (
     <div
@@ -238,127 +144,128 @@ const VideoContainer = ({
         isFullscreen && "fixed inset-0 z-50",
         className,
       )}
-      tabIndex={0}
     >
-      <div className="relative w-full h-full flex">
-        <div
-          className={cn(
-            "relative transition-all duration-300 ease-in-out",
-            layout === "split" ? "w-1/2" : "w-full",
-          )}
-        >
-          <InstructorVideo
-            videoUrl={videoUrl}
-            onTimeUpdate={handleTimeUpdate}
-            onDurationChange={handleDurationChange}
-            onError={handleVideoError}
-            onEnded={handleVideoEnded}
-            onLoadedData={handleVideoLoaded}
-            ref={videoRef}
-          />
+      <div className="absolute top-4 left-4 right-4 z-30">
+        <YouTubeInput onSubmit={setYoutubeVideoId} />
+      </div>
 
-          {videoError && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/60 backdrop-blur-sm">
-              <div className="text-center max-w-md">
-                <h3 className="text-xl font-semibold text-destructive mb-2">
-                  Video Error
-                </h3>
-                <p className="text-sm text-muted-foreground mb-4">
-                  {videoError.message}
-                </p>
-                <Button
-                  variant="secondary"
-                  size="lg"
-                  onClick={handleRetryVideo}
-                  className="bg-white/10 hover:bg-white/20 text-white"
-                >
-                  <RefreshCw className="mr-2 h-4 w-4" />
-                  Retry Video
-                </Button>
+      <div className="relative w-full h-full flex mt-16">
+        {/* Main Container */}
+        <div className="relative flex w-full h-full transition-all duration-300 ease-in-out">
+          {/* Video Container */}
+          <div
+            className={cn(
+              "relative h-full transition-all duration-300 ease-in-out",
+              layout === "split" && !isFullscreen ? "w-1/2" : "w-full",
+            )}
+            style={{ minHeight: "400px" }}
+          >
+            {youtubeVideoId && (
+              <div className="absolute inset-0">
+                <YouTube
+                  videoId={youtubeVideoId}
+                  opts={{
+                    playerVars: {
+                      autoplay: 0,
+                      controls: 0,
+                      modestbranding: 1,
+                      rel: 0,
+                      playsinline: 1,
+                      enablejsapi: 1,
+                    },
+                    width: "100%",
+                    height: "100%",
+                  }}
+                  onReady={handleYouTubeReady}
+                  onStateChange={handleYouTubeStateChange}
+                  onError={handleYouTubeError}
+                  className="w-full h-full"
+                  iframeClassName="w-full h-full absolute inset-0"
+                />
               </div>
-            </div>
-          )}
+            )}
 
-          {isVideoLoading && !videoError && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/60 backdrop-blur-sm">
-              <div className="text-center">
-                <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mb-4">
-                  <Loader2 className="h-8 w-8 text-primary animate-spin" />
-                </div>
-                <p className="text-sm text-muted-foreground">
-                  Loading video...
-                </p>
+            {!youtubeVideoId && (
+              <div className="w-full h-full flex items-center justify-center text-muted-foreground">
+                Enter a YouTube URL to begin
               </div>
-            </div>
-          )}
-
-          {isEnded && !videoError && !isVideoLoading && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/60 backdrop-blur-sm">
-              <div className="text-center">
-                <h3 className="text-2xl font-semibold text-white mb-4">
-                  Workout Complete!
-                </h3>
-                <div className="flex gap-2 justify-center">
-                  <Button
-                    variant="secondary"
-                    size="lg"
-                    onClick={handleReset}
-                    className="bg-white/10 hover:bg-white/20 text-white"
-                  >
-                    <RotateCcw className="mr-2 h-4 w-4" />
-                    Start Over
-                  </Button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Split View Webcam */}
-        <div
-          className={cn(
-            "relative transition-all duration-300 ease-in-out",
-            layout === "split" ? "w-1/2" : "hidden",
-          )}
-        >
-          {splitWebcamFeed}
-        </div>
-
-        {/* Mini Webcam Overlay */}
-        {layout === "mini" && isCameraEnabled && !webcamError && (
-          <div className="absolute top-4 right-4 w-[320px] h-[180px] rounded-lg overflow-hidden shadow-lg border border-border">
-            {miniWebcamFeed}
+            )}
           </div>
-        )}
 
-        <div className="absolute top-4 left-4 z-10 flex flex-col gap-2">
+          {/* Webcam Feed */}
+          {layout === "split" && (
+            <div
+              className={cn(
+                "relative h-full transition-all duration-300 ease-in-out",
+                !isFullscreen
+                  ? "w-1/2"
+                  : "absolute top-4 right-4 w-[320px] h-[180px]",
+              )}
+              style={!isFullscreen ? { minHeight: "400px" } : {}}
+            >
+              <div
+                className={cn(
+                  "w-full h-full",
+                  isFullscreen &&
+                    "rounded-lg overflow-hidden shadow-lg border border-border",
+                )}
+              >
+                <WebcamFeed
+                  key="split-webcam"
+                  isEnabled={isCameraEnabled}
+                  className="w-full h-full"
+                  onError={setWebcamError}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Mini Webcam Overlay */}
+          {layout === "mini" && isCameraEnabled && !webcamError && (
+            <div className="absolute top-4 right-4 w-[320px] h-[180px] rounded-lg overflow-hidden shadow-lg border border-border">
+              <WebcamFeed
+                key="mini-webcam"
+                isEnabled={isCameraEnabled}
+                className="w-full h-full"
+                onError={setWebcamError}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* Floating Controls */}
+        <div className="absolute top-20 left-4 z-10 flex flex-col gap-2">
           {isCameraEnabled && !webcamError && (
             <LayoutToggle layout={layout} onChange={setLayout} />
           )}
           <GridToggle showGrid={showGrid} onChange={setShowGrid} />
         </div>
 
+        {/* Alignment Grid Overlay */}
         {showGrid && <AlignmentGrid />}
 
-        <div className="absolute bottom-0 left-0 right-0">
-          <VideoControls
-            isPlaying={isPlaying}
-            currentTime={currentTime}
-            duration={duration}
-            layout={layout}
-            showGrid={showGrid}
-            isFullscreen={isFullscreen}
-            onPlayPause={handlePlayPause}
-            onReset={handleReset}
-            onSeek={handleSeek}
-            onLayoutToggle={() =>
-              setLayout(layout === "split" ? "mini" : "split")
-            }
-            onGridToggle={() => setShowGrid(!showGrid)}
-            onFullscreenToggle={toggleFullscreen}
-            disabled={isVideoLoading}
-          />
-        </div>
+        {/* Video Controls */}
+        {youtubeVideoId && (
+          <div className="absolute bottom-0 left-0 right-0">
+            <VideoControls
+              isPlaying={isPlaying}
+              currentTime={currentTime}
+              duration={duration}
+              layout={layout}
+              showGrid={showGrid}
+              isFullscreen={isFullscreen}
+              onPlayPause={handlePlayPause}
+              onReset={handleReset}
+              onSeek={handleSeek}
+              onLayoutToggle={() =>
+                setLayout(layout === "split" ? "mini" : "split")
+              }
+              onGridToggle={() => setShowGrid(!showGrid)}
+              onFullscreenToggle={toggleFullscreen}
+              disabled={isVideoLoading}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
